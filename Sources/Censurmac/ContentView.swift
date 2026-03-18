@@ -20,7 +20,7 @@ struct ContentView: View {
     @StateObject private var vm = RedactionViewModel()
 
     var body: some View {
-        NavigationSplitView(columnVisibility: .constant(.all)) {
+        NavigationSplitView {
             SidebarView(vm: vm)
                 .frame(minWidth: 240, maxWidth: 320)
         } detail: {
