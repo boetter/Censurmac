@@ -121,7 +121,7 @@ struct SidebarView: View {
                         }
                         .font(.caption)
                         .buttonStyle(.plain)
-                        .foregroundStyle(.accentColor)
+                        .foregroundStyle(Color.accentColor)
                     }
                     .padding(.horizontal, 12)
                     .padding(.vertical, 6)
