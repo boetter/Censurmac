@@ -26,7 +26,7 @@ class PDFRedactionEngine {
             let selections = original.findString(entity.originalText, withOptions: [.caseInsensitive])
             for selection in selections {
                 for page in selection.pages {
-                    guard let idx = original.index(for: page) else { continue }
+                    let idx = original.index(for: page)
                     let rect = selection.bounds(for: page)
                     redactionsByPage[idx, default: []].append((rect: rect, replacement: entity.replacement))
                 }
