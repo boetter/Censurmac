@@ -1,28 +1,46 @@
 import SwiftUI
-import PDFKit
 import UniformTypeIdentifiers
 
+// MARK: - Supported file types
+
+let supportedUTTypes: [UTType] = [
+    .plainText, .rtf,
+    UTType(filenameExtension: "docx") ?? .data,
+    UTType(filenameExtension: "doc")  ?? .data,
+    UTType(filenameExtension: "xlsx") ?? .data,
+    UTType(filenameExtension: "xls")  ?? .data,
+    .commaSeparatedText,
+    UTType(filenameExtension: "tsv")  ?? .data,
+    UTType(filenameExtension: "md")   ?? .plainText,
+]
+
+// MARK: - Root view
+
 struct ContentView: View {
-    @StateObject private var vm = PDFRedactionViewModel()
+    @StateObject private var vm = RedactionViewModel()
 
     var body: some View {
-        NavigationSplitView {
+        NavigationSplitView(columnVisibility: .constant(.all)) {
             SidebarView(vm: vm)
-                .frame(minWidth: 260, maxWidth: 340)
+                .frame(minWidth: 240, maxWidth: 320)
         } detail: {
-            DetailView(vm: vm)
+            TextPreviewView(vm: vm)
         }
-        .onDrop(of: [UTType.pdf], isTargeted: nil) { providers in
+        .onDrop(of: supportedUTTypes, isTargeted: nil) { providers in
             vm.handleDrop(providers)
             return true
         }
+        .alert("Fejl", isPresented: $vm.showError) {
+            Button("OK", role: .cancel) {}
+        } message: {
+            Text(vm.errorMessage)
+        }
         .toolbar {
             ToolbarItemGroup(placement: .primaryAction) {
-                Button("Åbn PDF") { vm.openFilePicker() }
+                Button("Åbn fil…") { vm.openFilePicker() }
                     .keyboardShortcut("o")
-
-                if vm.redactedDocument != nil {
-                    Button("Gem redigeret") { vm.saveRedactedPDF() }
+                if vm.redactedText != nil {
+                    Button("Gem censureret tekst…") { vm.saveRedactedText() }
                         .keyboardShortcut("s")
                 }
             }
@@ -33,43 +51,45 @@ struct ContentView: View {
 // MARK: - Sidebar
 
 struct SidebarView: View {
-    @ObservedObject var vm: PDFRedactionViewModel
+    @ObservedObject var vm: RedactionViewModel
 
     var body: some View {
         VStack(spacing: 0) {
-            header
+            headerRow
             Divider()
-            if vm.originalDocument == nil {
+            if vm.originalText == nil {
                 dropPrompt
             } else {
-                entityList
+                entitySection
                 Divider()
                 actionButtons
             }
         }
     }
 
-    var header: some View {
+    var headerRow: some View {
         HStack {
-            Text("Censurmac")
+            Label("Censurmac", systemImage: "eye.slash.fill")
                 .font(.headline)
             Spacer()
-            if vm.isProcessing {
-                ProgressView().scaleEffect(0.65)
-            }
+            if vm.isProcessing { ProgressView().scaleEffect(0.65) }
         }
-        .padding(.horizontal)
+        .padding(.horizontal, 12)
         .padding(.vertical, 10)
     }
 
     var dropPrompt: some View {
-        VStack(spacing: 12) {
+        VStack(spacing: 14) {
             Spacer()
-            Image(systemName: "doc.badge.arrow.up")
-                .font(.system(size: 44))
+            Image(systemName: "arrow.down.doc")
+                .font(.system(size: 40))
                 .foregroundStyle(.secondary)
-            Text("Træk en PDF hertil")
+            Text("Træk fil hertil")
+                .font(.title3)
                 .foregroundStyle(.secondary)
+            Text(".txt · .docx · .xlsx · .rtf · .csv · .md")
+                .font(.caption)
+                .foregroundStyle(.tertiary)
             Button("Vælg fil…") { vm.openFilePicker() }
                 .buttonStyle(.borderedProminent)
             Spacer()
@@ -77,42 +97,60 @@ struct SidebarView: View {
         .frame(maxWidth: .infinity)
     }
 
-    var entityList: some View {
+    var entitySection: some View {
         Group {
             if vm.entities.isEmpty && !vm.isProcessing {
                 VStack {
                     Spacer()
-                    Text("Ingen GDPR-data fundet")
+                    Label("Ingen GDPR-data fundet", systemImage: "checkmark.shield")
                         .foregroundStyle(.secondary)
                         .font(.callout)
                     Spacer()
                 }
                 .frame(maxWidth: .infinity)
             } else {
-                List(vm.entities) { entity in
-                    EntityRow(entity: entity, selected: vm.selectedIds.contains(entity.id)) {
-                        vm.toggleEntity(entity.id)
+                VStack(spacing: 0) {
+                    HStack {
+                        Text("Fundet GDPR-data")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        Spacer()
+                        Button(vm.allSelected ? "Fravælg alle" : "Vælg alle") {
+                            vm.toggleAll()
+                        }
+                        .font(.caption)
+                        .buttonStyle(.plain)
+                        .foregroundStyle(.accentColor)
                     }
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 6)
+                    Divider()
+                    List(vm.entities) { entity in
+                        EntityRow(entity: entity,
+                                  selected: vm.selectedOriginals.contains(entity.originalText)) {
+                            vm.toggleEntity(entity.originalText)
+                        }
+                    }
+                    .listStyle(.sidebar)
                 }
-                .listStyle(.sidebar)
             }
         }
     }
 
     var actionButtons: some View {
         VStack(spacing: 8) {
-            Button("Analysér for GDPR-data") { vm.analyze() }
+            Button("Analysér") { vm.analyze() }
                 .buttonStyle(.bordered)
-                .disabled(vm.originalDocument == nil || vm.isProcessing)
+                .disabled(vm.isProcessing)
                 .frame(maxWidth: .infinity)
 
-            Button("Redigér markerede (\(vm.selectedIds.count))") { vm.redact() }
+            Button("Censurér (\(vm.selectedOriginals.count) valgt)") { vm.redact() }
                 .buttonStyle(.borderedProminent)
-                .disabled(vm.selectedIds.isEmpty || vm.isProcessing)
+                .disabled(vm.selectedOriginals.isEmpty || vm.isProcessing)
                 .frame(maxWidth: .infinity)
 
-            if vm.redactedDocument != nil {
-                Button("Gem redigeret PDF…") { vm.saveRedactedPDF() }
+            if vm.redactedText != nil {
+                Button("Gem som .txt…") { vm.saveRedactedText() }
                     .buttonStyle(.bordered)
                     .frame(maxWidth: .infinity)
             }
@@ -121,10 +159,10 @@ struct SidebarView: View {
     }
 }
 
-// MARK: - Entity Row
+// MARK: - Entity row
 
 struct EntityRow: View {
-    let entity: RedactionEntity
+    let entity: EntityGroup
     let selected: Bool
     let onToggle: () -> Void
 
@@ -136,10 +174,16 @@ struct EntityRow: View {
                     .frame(width: 16)
 
                 VStack(alignment: .leading, spacing: 2) {
-                    Text(entity.originalText)
-                        .font(.caption)
-                        .lineLimit(1)
-                        .foregroundStyle(.primary)
+                    HStack {
+                        Text(entity.originalText)
+                            .font(.caption)
+                            .lineLimit(1)
+                            .foregroundStyle(.primary)
+                        Spacer()
+                        Text("×\(entity.count)")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                    }
                     HStack(spacing: 4) {
                         Label(entity.type.label, systemImage: entity.type.icon)
                             .font(.caption2)
@@ -148,6 +192,7 @@ struct EntityRow: View {
                         Text("→ \(entity.replacement)")
                             .font(.caption2)
                             .foregroundStyle(.blue)
+                            .lineLimit(1)
                     }
                 }
             }
@@ -157,58 +202,49 @@ struct EntityRow: View {
     }
 }
 
-// MARK: - Detail (PDF preview)
+// MARK: - Text preview
 
-struct DetailView: View {
-    @ObservedObject var vm: PDFRedactionViewModel
+struct TextPreviewView: View {
+    @ObservedObject var vm: RedactionViewModel
+
+    var displayText: String {
+        (vm.showRedacted ? vm.redactedText : vm.originalText) ?? ""
+    }
 
     var body: some View {
-        if let doc = displayDocument {
-            VStack(spacing: 0) {
-                if vm.redactedDocument != nil {
-                    Picker("", selection: $vm.showRedacted) {
-                        Text("Original").tag(false)
-                        Text("Redigeret").tag(true)
-                    }
-                    .pickerStyle(.segmented)
-                    .padding(8)
-                    .background(.bar)
+        VStack(spacing: 0) {
+            if vm.redactedText != nil {
+                Picker("", selection: $vm.showRedacted) {
+                    Text("Original").tag(false)
+                    Text("Censureret").tag(true)
                 }
-                PDFKitView(document: doc)
+                .pickerStyle(.segmented)
+                .padding(8)
+                .background(.bar)
             }
-        } else {
-            VStack(spacing: 12) {
-                Image(systemName: "doc.viewfinder")
-                    .font(.system(size: 48))
-                    .foregroundStyle(.tertiary)
-                Text("Åbn en PDF for at starte")
-                    .foregroundStyle(.secondary)
+
+            if vm.originalText == nil {
+                emptyState
+            } else {
+                ScrollView {
+                    Text(displayText)
+                        .font(.system(.body, design: .monospaced))
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .textSelection(.enabled)
+                        .padding()
+                }
             }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
     }
 
-    var displayDocument: PDFDocument? {
-        vm.showRedacted ? vm.redactedDocument : vm.originalDocument
-    }
-}
-
-// MARK: - PDFKit wrapper
-
-struct PDFKitView: NSViewRepresentable {
-    let document: PDFDocument
-
-    func makeNSView(context: Context) -> PDFView {
-        let pdfView = PDFView()
-        pdfView.autoScales = true
-        pdfView.displayMode = .singlePageContinuous
-        pdfView.displaysPageBreaks = true
-        return pdfView
-    }
-
-    func updateNSView(_ pdfView: PDFView, context: Context) {
-        if pdfView.document !== document {
-            pdfView.document = document
+    var emptyState: some View {
+        VStack(spacing: 12) {
+            Image(systemName: "doc.text.magnifyingglass")
+                .font(.system(size: 44))
+                .foregroundStyle(.tertiary)
+            Text("Åbn en fil for at starte")
+                .foregroundStyle(.secondary)
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 }

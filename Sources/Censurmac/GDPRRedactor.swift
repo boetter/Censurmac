@@ -1,15 +1,22 @@
 import Foundation
 import NaturalLanguage
 
-// MARK: - Model
+// MARK: - Models
 
-struct RedactionEntity: Identifiable, Hashable {
+struct Substitution {
+    let range: Range<String.Index>
+    let original: String
+    let replacement: String
+}
+
+struct EntityGroup: Identifiable, Hashable {
     let id = UUID()
     let originalText: String
     let replacement: String
     let type: EntityType
+    let count: Int
 
-    enum EntityType: String, CaseIterable {
+    enum EntityType: String {
         case personName, organization, location, email, phone, cpr
 
         var label: String {
@@ -35,34 +42,78 @@ struct RedactionEntity: Identifiable, Hashable {
         }
     }
 
-    static func == (lhs: RedactionEntity, rhs: RedactionEntity) -> Bool { lhs.id == rhs.id }
+    static func == (lhs: EntityGroup, rhs: EntityGroup) -> Bool { lhs.id == rhs.id }
     func hash(into hasher: inout Hasher) { hasher.combine(id) }
 }
 
-// MARK: - Detector
+// MARK: - Redactor
 
 class GDPRRedactor {
     private let personLabels = ["A","B","C","D","E","F","G","H","I","J","K","L","M","N","O","P"]
 
-    func findEntities(in text: String) -> [RedactionEntity] {
+    /// Find all substitutions (with precise string ranges) in the given text.
+    func findSubstitutions(in text: String) -> [Substitution] {
         var nameMap: [String: String] = [:]
         var nameCount = 0
+        var result: [Substitution] = []
 
-        var all: [RedactionEntity] = []
-        all += namedEntities(in: text, nameMap: &nameMap, nameCount: &nameCount)
-        all += regexEntities(in: text)
-        return deduplicated(all, in: text)
+        result += nlSubstitutions(in: text, nameMap: &nameMap, nameCount: &nameCount)
+        result += regexSubstitutions(in: text, type: .email,
+            pattern: #"[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}"#,
+            replacement: "[email fjernet]")
+        result += regexSubstitutions(in: text, type: .phone,
+            pattern: #"(?:(?:\+|00)45[\s\-]?)?(?:\d{2}[\s\-]?){3}\d{2}"#,
+            replacement: "[tlf. fjernet]")
+        result += regexSubstitutions(in: text, type: .phone,
+            pattern: #"\+(?!45)\d{1,3}[\s\-]\d{4,14}"#,
+            replacement: "[tlf. fjernet]")
+        result += regexSubstitutions(in: text, type: .cpr,
+            pattern: #"\b[0-3]\d[0-1]\d\d{2}[-–]?\d{4}\b"#,
+            replacement: "[CPR fjernet]")
+
+        return removeOverlaps(result)
     }
 
-    // MARK: Named entities via Apple NL framework
+    /// Group substitutions into unique EntityGroups for display.
+    func groupEntities(from substitutions: [Substitution]) -> [EntityGroup] {
+        var groups: [String: (replacement: String, type: EntityGroup.EntityType, count: Int)] = [:]
+        for sub in substitutions {
+            if var g = groups[sub.original] {
+                g.count += 1
+                groups[sub.original] = g
+            } else {
+                let type = entityType(for: sub)
+                groups[sub.original] = (sub.replacement, type, 1)
+            }
+        }
+        return groups.map { original, info in
+            EntityGroup(originalText: original, replacement: info.replacement, type: info.type, count: info.count)
+        }.sorted { $0.type.rawValue < $1.type.rawValue }
+    }
 
-    private func namedEntities(in text: String, nameMap: inout [String: String], nameCount: inout Int) -> [RedactionEntity] {
-        var result: [RedactionEntity] = []
+    /// Apply selected substitutions to the text, replacing in reverse range order.
+    func apply(_ substitutions: [Substitution], selectedOriginals: Set<String>, to text: String) -> String {
+        let toApply = substitutions
+            .filter { selectedOriginals.contains($0.original) }
+            .sorted { $0.range.lowerBound > $1.range.lowerBound }
+
+        var result = text
+        for sub in toApply {
+            result.replaceSubrange(sub.range, with: sub.replacement)
+        }
+        return result
+    }
+
+    // MARK: - Private
+
+    private func nlSubstitutions(in text: String, nameMap: inout [String: String], nameCount: inout Int) -> [Substitution] {
+        var result: [Substitution] = []
         let tagger = NLTagger(tagSchemes: [.nameType])
         tagger.string = text
-
         let options: NLTagger.Options = [.omitPunctuation, .omitWhitespace, .joinNames]
-        tagger.enumerateTags(in: text.startIndex..<text.endIndex, unit: .word, scheme: .nameType, options: options) { tag, range in
+
+        tagger.enumerateTags(in: text.startIndex..<text.endIndex, unit: .word,
+                             scheme: .nameType, options: options) { tag, range in
             guard let tag else { return true }
             let raw = String(text[range])
             guard raw.count > 1 else { return true }
@@ -77,13 +128,13 @@ class GDPRRedactor {
                     nameMap[raw] = label
                     nameCount += 1
                 }
-                result.append(RedactionEntity(originalText: raw, replacement: label, type: .personName))
+                result.append(Substitution(range: range, original: raw, replacement: label))
 
             case .organizationName:
-                result.append(RedactionEntity(originalText: raw, replacement: "[Organisation]", type: .organization))
+                result.append(Substitution(range: range, original: raw, replacement: "[Organisation]"))
 
             case .placeName:
-                result.append(RedactionEntity(originalText: raw, replacement: "[Sted]", type: .location))
+                result.append(Substitution(range: range, original: raw, replacement: "[Sted]"))
 
             default: break
             }
@@ -92,66 +143,34 @@ class GDPRRedactor {
         return result
     }
 
-    // MARK: Regex-based detection
-
-    private func regexEntities(in text: String) -> [RedactionEntity] {
-        var result: [RedactionEntity] = []
-
-        // Email
-        result += matches(
-            in: text,
-            pattern: #"[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}"#,
-            type: .email,
-            replacement: "[email fjernet]"
-        )
-
-        // Danish phone: 8 digits optionally grouped, with optional +45 prefix
-        result += matches(
-            in: text,
-            pattern: #"(?:(?:\+|00)45[\s\-]?)?(?:\d{2}[\s\-]?){3}\d{2}"#,
-            type: .phone,
-            replacement: "[tlf. fjernet]"
-        )
-
-        // International phone (+XX ...)
-        result += matches(
-            in: text,
-            pattern: #"\+(?!45)\d{1,3}[\s\-]\d{4,14}"#,
-            type: .phone,
-            replacement: "[tlf. fjernet]"
-        )
-
-        // CPR: DDMMYY-XXXX or DDMMYYXXXX (Danish social security)
-        result += matches(
-            in: text,
-            pattern: #"\b[0-3]\d[0-1]\d\d{2}[-–]?\d{4}\b"#,
-            type: .cpr,
-            replacement: "[CPR fjernet]"
-        )
-
-        return result
-    }
-
-    private func matches(in text: String, pattern: String, type: RedactionEntity.EntityType, replacement: String) -> [RedactionEntity] {
+    private func regexSubstitutions(in text: String, type: EntityGroup.EntityType, pattern: String, replacement: String) -> [Substitution] {
         guard let regex = try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive]) else { return [] }
         let nsRange = NSRange(text.startIndex..., in: text)
         return regex.matches(in: text, range: nsRange).compactMap { match in
             guard let range = Range(match.range, in: text) else { return nil }
-            return RedactionEntity(originalText: String(text[range]), replacement: replacement, type: type)
+            return Substitution(range: range, original: String(text[range]), replacement: replacement)
         }
     }
 
-    // MARK: Deduplication (remove overlapping / identical entities)
-
-    private func deduplicated(_ entities: [RedactionEntity], in text: String) -> [RedactionEntity] {
-        // Group by originalText first to avoid processing same string multiple times
-        var seen = Set<String>()
-        var unique: [RedactionEntity] = []
-        for e in entities {
-            if seen.insert(e.originalText.lowercased()).inserted {
-                unique.append(e)
-            }
+    private func removeOverlaps(_ substitutions: [Substitution]) -> [Substitution] {
+        let sorted = substitutions.sorted { $0.range.lowerBound < $1.range.lowerBound }
+        var result: [Substitution] = []
+        var lastEnd: String.Index? = nil
+        for sub in sorted {
+            if let end = lastEnd, sub.range.lowerBound < end { continue }
+            result.append(sub)
+            lastEnd = sub.range.upperBound
         }
-        return unique
+        return result
+    }
+
+    private func entityType(for sub: Substitution) -> EntityGroup.EntityType {
+        if sub.replacement.hasPrefix("Person ") { return .personName }
+        if sub.replacement == "[Organisation]" { return .organization }
+        if sub.replacement == "[Sted]" { return .location }
+        if sub.replacement.contains("email") { return .email }
+        if sub.replacement.contains("tlf") { return .phone }
+        if sub.replacement.contains("CPR") { return .cpr }
+        return .personName
     }
 }
