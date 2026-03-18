@@ -13,11 +13,30 @@ class RedactionViewModel: ObservableObject {
     @Published var showError = false
     @Published var errorMessage = ""
 
+    /// Viser hvilken analyse-motor der bruges ("LLM: llama3.2:3b" eller "Heuristik")
+    @Published var engineLabel: String = "Tjekker Ollama…"
+
     var allSelected: Bool { selectedOriginals.count == entities.count }
 
     private let extractor = TextExtractor()
     private let redactor = GDPRRedactor()
     private var substitutions: [Substitution] = []
+
+    init() {
+        Task { await refreshOllamaStatus() }
+    }
+
+    // MARK: - Ollama-status
+
+    func refreshOllamaStatus() async {
+        await OllamaExtractor.shared.checkAvailability()
+        let ollama = OllamaExtractor.shared
+        if await ollama.isAvailable, let model = await ollama.modelName {
+            engineLabel = "LLM: \(model)"
+        } else {
+            engineLabel = "Heuristik (Ollama ikke fundet)"
+        }
+    }
 
     // MARK: - File loading
 
@@ -72,11 +91,9 @@ class RedactionViewModel: ObservableObject {
 
     private func runAnalysis(on text: String) async {
         isProcessing = true
-        let (subs, groups) = await Task.detached(priority: .userInitiated) { [redactor] in
-            let subs = redactor.findSubstitutions(in: text)
-            let groups = redactor.groupEntities(from: subs)
-            return (subs, groups)
-        }.value
+        // findSubstitutions er nu async og kalder Ollama direkte
+        let subs = await redactor.findSubstitutions(in: text)
+        let groups = redactor.groupEntities(from: subs)
         substitutions = subs
         entities = groups
         selectedOriginals = Set(groups.map(\.originalText))

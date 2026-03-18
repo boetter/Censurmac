@@ -73,6 +73,10 @@ struct SidebarView: View {
             Label("Censurmac", systemImage: "eye.slash.fill")
                 .font(.headline)
             Spacer()
+            Text(vm.engineLabel)
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
             if vm.isProcessing { ProgressView().scaleEffect(0.65) }
         }
         .padding(.horizontal, 12)
