@@ -20,12 +20,13 @@ struct ContentView: View {
     @StateObject private var vm = RedactionViewModel()
 
     var body: some View {
-        NavigationSplitView {
+        HSplitView {
             SidebarView(vm: vm)
-                .frame(minWidth: 240, maxWidth: 320)
-        } detail: {
+                .frame(minWidth: 240, idealWidth: 280, maxWidth: 340)
             TextPreviewView(vm: vm)
+                .frame(minWidth: 420)
         }
+        .frame(minWidth: 700, minHeight: 500)
         .onDrop(of: supportedUTTypes, isTargeted: nil) { providers in
             vm.handleDrop(providers)
             return true
