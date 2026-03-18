@@ -98,9 +98,9 @@ struct SidebarView: View {
         .frame(maxWidth: .infinity)
     }
 
+    @ViewBuilder
     var entitySection: some View {
-        Group {
-            if vm.entities.isEmpty && !vm.isProcessing {
+        if vm.entities.isEmpty && !vm.isProcessing {
                 VStack {
                     Spacer()
                     Label("Ingen GDPR-data fundet", systemImage: "checkmark.shield")
@@ -134,7 +134,6 @@ struct SidebarView: View {
                     }
                     .listStyle(.sidebar)
                 }
-            }
         }
     }
 
